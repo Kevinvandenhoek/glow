@@ -1,9 +1,10 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 
-	let bass = 0,
-		mid = 0,
-		treble = 0; // Frequency data variables
+	$: isPlaying = false;
+	$: bass = 0;
+	$: mid = 0;
+	$: treble = 0;
 
 	async function loadShader(
 		gl: WebGLRenderingContext,
@@ -51,10 +52,27 @@
 		return { gl, shaderProgram };
 	}
 
-	function calculateFrequencyBands(frequencyData: Uint8Array) {
-		bass = frequencyData.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
-		mid = frequencyData.slice(10, 20).reduce((a, b) => a + b, 0) / 10;
-		treble = frequencyData.slice(20, 30).reduce((a, b) => a + b, 0) / 10;
+	function calculateFrequencyBands(frequencyData: Uint8Array, sampleRate: number, fftSize: number) {
+		const frequencyStep = sampleRate / fftSize; // Frequency represented by each index
+
+		// Define frequency ranges
+		const bassRange = { min: 20, max: 250 };
+		const midRange = { min: 250, max: 4000 };
+		const trebleRange = { min: 4000, max: 20000 };
+
+		// Helper function to calculate average amplitude in a frequency range
+		function averageInRange(range: { min: number; max: number }) {
+			const start = Math.floor(range.min / frequencyStep);
+			const end = Math.ceil(range.max / frequencyStep);
+			const count = end - start;
+			const sum = frequencyData.slice(start, end).reduce((a, b) => a + b, 0);
+			return sum / count;
+		}
+
+		// Calculate average amplitude for each range
+		bass = averageInRange(bassRange);
+		mid = averageInRange(midRange) * 2;
+		treble = averageInRange(trebleRange) * 10;
 	}
 
 	async function initAudioAndWebGL(canvas: HTMLCanvasElement) {
@@ -64,16 +82,18 @@
 		const audioElement = new Audio('track.mp3');
 		const track = audioContext.createMediaElementSource(audioElement);
 		const analyzer = audioContext.createAnalyser();
+		analyzer.fftSize = 2048; // Example FFT size
 		track.connect(analyzer);
 		analyzer.connect(audioContext.destination);
 		audioElement.play();
 
 		const frequencyData = new Uint8Array(analyzer.frequencyBinCount);
+		analyzer.getByteFrequencyData(frequencyData);
 
 		function animate() {
 			requestAnimationFrame(animate);
 			analyzer.getByteFrequencyData(frequencyData);
-			calculateFrequencyBands(frequencyData);
+			calculateFrequencyBands(frequencyData, audioContext.sampleRate, analyzer.fftSize);
 
 			const bassLocation = gl.getUniformLocation(shaderProgram, 'u_bass');
 			const midLocation = gl.getUniformLocation(shaderProgram, 'u_mid');
@@ -82,6 +102,12 @@
 			gl.uniform1f(bassLocation, bass / 255);
 			gl.uniform1f(midLocation, mid / 255);
 			gl.uniform1f(trebleLocation, treble / 255);
+
+			const resolutionLocation = gl.getUniformLocation(shaderProgram, 'u_resolution');
+			gl.uniform2f(resolutionLocation, canvas.width, canvas.height);
+
+			const timeLocation = gl.getUniformLocation(shaderProgram, 'u_time');
+			gl.uniform1f(timeLocation, performance.now() * 0.001); // Converts time to seconds
 
 			gl.clear(gl.COLOR_BUFFER_BIT);
 			gl.useProgram(shaderProgram);
@@ -108,6 +134,9 @@
 	});
 
 	async function onClick() {
+		if (isPlaying) return;
+		isPlaying = true;
+
 		try {
 			const canvas = document.getElementById('canvas') as HTMLCanvasElement;
 			await initAudioAndWebGL(canvas);
@@ -118,5 +147,12 @@
 </script>
 
 <main>
-	<canvas id="canvas" on:click={onClick} />
+	<div style="position:absolute">
+		<canvas id="canvas" on:click={onClick} />
+	</div>
+	<div style="position:absolute">
+		<p>{bass / 255}</p>
+		<p>{mid / 255}</p>
+		<p>{treble / 255}</p>
+	</div>
 </main>
